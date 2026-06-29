@@ -1,8 +1,8 @@
 import os
+import re
 import json
 import time
 import logging
-from urllib.parse import urljoin
 import requests
 from bs4 import BeautifulSoup
 
@@ -12,6 +12,8 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 log = logging.getLogger(__name__)
+# 학교 서버의 비표준 HTTP 헤더로 인한 urllib3 내부 경고 억제
+logging.getLogger("urllib3").setLevel(logging.ERROR)
 
 TARGET_URLS = {
     "일반공지": "https://eulji.ac.kr/renewal/index.html?menuno=3160",
@@ -48,8 +50,13 @@ def get_notices(url):
         rows = soup.select("table.board-list tbody tr")
         notices = []
 
+        # menuno 추출 (URL 고유 식별자로 사용)
+        menuno_match = re.search(r"menuno=(\d+)", url)
+        menuno = menuno_match.group(1) if menuno_match else ""
+
         for row in rows:
-            if row.select_one("td.notice"):
+            # 상단 고정 공지 행 제외 (notice 이미지로 판별)
+            if row.select_one('td img[src*="icon_notice"]'):
                 continue
 
             title_el = row.select_one("td.subject a")
@@ -57,9 +64,14 @@ def get_notices(url):
                 continue
 
             title = title_el.get_text(strip=True)
-            href = title_el.get("href", "")
-            # urljoin으로 상대경로를 안전하게 절대경로로 변환
-            link = urljoin(url, href)
+
+            # href가 ###이므로 onclick에서 seq 번호 추출
+            onclick = title_el.get("onclick", "")
+            seq_match = re.search(r"submitForm\(this,'view',(\d+)\)", onclick)
+            if not seq_match:
+                continue
+            seq = seq_match.group(1)
+            link = f"https://eulji.ac.kr/renewal/index.html?menuno={menuno}&mode=view&seq={seq}"
 
             notices.append({"title": title, "link": link})
 
