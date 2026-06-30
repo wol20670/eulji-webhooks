@@ -22,8 +22,8 @@ DB_FILE = "latest_notices.json"
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK")
 
 CATEGORY_COLORS = {
-    "일반공지": 3447003,   # 파랑
-    "장학공지": 5763207,   # 초록
+    "일반공지": 3447003,
+    "장학공지": 5763207,
 }
 
 MAX_SAVED_LINKS = 50
@@ -41,13 +41,11 @@ HEADERS = {
 
 def get_notices(session, url):
     menuno = re.search(r"menuno=(\d+)", url).group(1)
-
     try:
         response = session.get(url, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
         response.encoding = "utf-8"
         soup = BeautifulSoup(response.text, "html.parser")
-
         notices = []
         for row in soup.select("table.board-list tbody tr"):
             title_el = row.select_one("td.subject a")
@@ -61,15 +59,12 @@ def get_notices(session, url):
             title = title_el.get_text(strip=True)
             if "의정부" in title and "성남" not in title:
                 continue
-
-            # 날짜: YYYY-MM-DD 패턴을 가진 td 탐색
             date = ""
             for td in row.find_all("td"):
                 text = td.get_text(strip=True)
                 if re.match(r"\d{4}-\d{2}-\d{2}", text):
                     date = text
                     break
-
             notices.append({
                 "title": title,
                 "link": f"https://eulji.ac.kr/renewal/index.html?menuno={menuno}&mode=view&seq={seq_match.group(1)}",
@@ -81,27 +76,55 @@ def get_notices(session, url):
         return []
 
 
-def send_discord_notices(session, category, notices):
-    # 최신순(위) → 오래된순(아래) 으로 정렬해서 표시
+def build_payload(category, notices):
     lines = []
     for n in notices:
         date_str = f"`{n['date']}`  " if n["date"] else ""
         lines.append(f"{date_str}[{n['title']}]({n['link']})")
-
-    payload = {
+    return {
         "embeds": [{
-            "title": f"🔔 을지대학교 [{category}] 새 공지 {len(notices)}건",
+            "title": f"🔔 을지대학교 [{category}] 최신 공지 {len(notices)}건",
             "description": "\n".join(lines),
             "color": CATEGORY_COLORS[category],
         }]
     }
+
+
+def send_or_edit(session, category, notices, message_id=None):
+    payload = build_payload(category, notices)
+
+    if message_id:
+        try:
+            resp = session.patch(
+                f"{DISCORD_WEBHOOK_URL}/messages/{message_id}",
+                json=payload,
+                timeout=REQUEST_TIMEOUT,
+            )
+            if resp.status_code == 404:
+                log.warning("[%s] 기존 메시지 없음(삭제됨), 새로 전송.", category)
+                message_id = None
+            else:
+                resp.raise_for_status()
+                log.info("[%s] 메시지 수정 완료 (id=%s)", category, message_id)
+                return message_id
+        except requests.RequestException as e:
+            log.error("디스코드 메시지 수정 실패 (%s): %s", category, e)
+            return message_id
+
+    # 신규 전송 — ?wait=true 로 message_id 받아옴
     try:
-        resp = session.post(DISCORD_WEBHOOK_URL, json=payload, timeout=REQUEST_TIMEOUT)
+        resp = session.post(
+            f"{DISCORD_WEBHOOK_URL}?wait=true",
+            json=payload,
+            timeout=REQUEST_TIMEOUT,
+        )
         resp.raise_for_status()
-        return True
+        new_id = resp.json().get("id")
+        log.info("[%s] 메시지 전송 완료 (id=%s)", category, new_id)
+        return new_id
     except requests.RequestException as e:
         log.error("디스코드 전송 실패 (%s): %s", category, e)
-        return False
+        return None
 
 
 def load_history():
@@ -128,6 +151,7 @@ def main():
         log.warning("DISCORD_WEBHOOK 환경 변수가 설정되지 않았습니다.")
 
     history = load_history()
+    message_ids = history.get("__message_ids__", {})
 
     with requests.Session() as session:
         session.headers.update(HEADERS)
@@ -141,26 +165,30 @@ def main():
             seen_links = history.get(category, [])
             seen_set = set(seen_links)
             new_notices = [n for n in notices if n["link"] not in seen_set]
+            top5 = sorted(notices, key=lambda n: n["date"], reverse=True)[:MAX_SEND_PER_RUN]
 
             if not seen_links:
-                to_send = sorted(notices, key=lambda n: n["date"], reverse=True)[:MAX_SEND_PER_RUN]
-                log.info("[%s] 최초 실행: 최신 %d건 전송.", category, len(to_send))
+                log.info("[%s] 최초 실행: 최신 %d건 전송.", category, len(top5))
+                if DISCORD_WEBHOOK_URL:
+                    new_id = send_or_edit(session, category, top5, message_ids.get(category))
+                    if new_id:
+                        message_ids[category] = new_id
             elif new_notices:
-                to_send = sorted(new_notices, key=lambda n: n["date"], reverse=True)[:MAX_SEND_PER_RUN]
-                for n in to_send:
+                for n in new_notices:
                     log.info("[%s] 새 공지 발견 → %s", category, n["title"])
+                if DISCORD_WEBHOOK_URL:
+                    new_id = send_or_edit(session, category, top5, message_ids.get(category))
+                    if new_id:
+                        message_ids[category] = new_id
             else:
                 log.info("[%s] 새 공지 없음.", category)
-                to_send = []
-
-            if to_send and DISCORD_WEBHOOK_URL:
-                send_discord_notices(session, category, to_send)
 
             new_links = [n["link"] for n in notices]
             new_links_set = set(new_links)
             merged = new_links + [link for link in seen_links if link not in new_links_set]
             history[category] = merged[:MAX_SAVED_LINKS]
 
+    history["__message_ids__"] = message_ids
     save_history(history)
 
 
