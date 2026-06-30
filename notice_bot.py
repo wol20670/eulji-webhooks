@@ -16,18 +16,19 @@ logging.getLogger("urllib3").setLevel(logging.ERROR)
 
 TARGET_URLS = {
     "일반공지": "https://eulji.ac.kr/renewal/index.html?menuno=3160",
-    "학사공지": "https://eulji.ac.kr/renewal/index.html?menuno=4005",
+    "장학공지": "https://eulji.ac.kr/renewal/index.html?menuno=4005",
 }
 
 DB_FILE = "latest_notices.json"
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK")
 
 CATEGORY_COLORS = {
-    "일반공지": 3447003,
-    "학사공지": 15105570,
+    "일반공지": 3447003,   # 파랑
+    "장학공지": 5763207,   # 초록
 }
 
 MAX_SAVED_LINKS = 50
+MAX_SEND_PER_RUN = 5   # 한 번에 최대 전송 건수
 REQUEST_TIMEOUT = 15
 
 HEADERS = {
@@ -127,9 +128,18 @@ def main():
             new_notices = [n for n in notices if n["link"] not in seen_set]
 
             if not seen_links:
-                log.info("[%s] 최초 실행: 현재 공지 %d건을 등록합니다.", category, len(notices))
+                # 최초 실행: 최신 5건을 알림으로 전송
+                to_send = notices[:MAX_SEND_PER_RUN]
+                log.info("[%s] 최초 실행: 최신 %d건 전송.", category, len(to_send))
+                for notice in reversed(to_send):
+                    log.info("[%s] → %s", category, notice["title"])
+                    if DISCORD_WEBHOOK_URL:
+                        send_discord_message(session, category, notice["title"], notice["link"])
+                        time.sleep(1)
             elif new_notices:
-                for notice in reversed(new_notices):
+                # 새 공지는 최대 5건, 오래된 것부터 전송
+                to_send = new_notices[:MAX_SEND_PER_RUN]
+                for notice in reversed(to_send):
                     log.info("[%s] 새 공지 발견 → %s", category, notice["title"])
                     if DISCORD_WEBHOOK_URL:
                         send_discord_message(session, category, notice["title"], notice["link"])
