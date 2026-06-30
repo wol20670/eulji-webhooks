@@ -76,22 +76,18 @@ def get_notices(session, url):
         return []
 
 
-def build_payload(category, notices):
+def send_or_edit_status(session, category, notices, message_id=None):
     lines = []
     for n in notices:
         date_str = f"`{n['date']}`  " if n["date"] else ""
         lines.append(f"{date_str}[{n['title']}]({n['link']})")
-    return {
+    payload = {
         "embeds": [{
             "title": f"🔔 을지대학교 [{category}] 최신 공지 {len(notices)}건",
             "description": "\n".join(lines),
             "color": CATEGORY_COLORS[category],
         }]
     }
-
-
-def send_or_edit(session, category, notices, message_id=None):
-    payload = build_payload(category, notices)
 
     if message_id:
         try:
@@ -105,13 +101,12 @@ def send_or_edit(session, category, notices, message_id=None):
                 message_id = None
             else:
                 resp.raise_for_status()
-                log.info("[%s] 메시지 수정 완료 (id=%s)", category, message_id)
+                log.info("[%s] 상태 메시지 수정 완료 (id=%s)", category, message_id)
                 return message_id
         except requests.RequestException as e:
             log.error("디스코드 메시지 수정 실패 (%s): %s", category, e)
             return message_id
 
-    # 신규 전송 — ?wait=true 로 message_id 받아옴
     try:
         resp = session.post(
             f"{DISCORD_WEBHOOK_URL}?wait=true",
@@ -120,11 +115,46 @@ def send_or_edit(session, category, notices, message_id=None):
         )
         resp.raise_for_status()
         new_id = resp.json().get("id")
-        log.info("[%s] 메시지 전송 완료 (id=%s)", category, new_id)
+        log.info("[%s] 상태 메시지 전송 완료 (id=%s)", category, new_id)
         return new_id
     except requests.RequestException as e:
         log.error("디스코드 전송 실패 (%s): %s", category, e)
         return None
+
+
+def send_notification(session, updates, notification_id=None):
+    lines = []
+    for category, notices in updates.items():
+        lines.append(f"**[{category}]** 새 공지 {len(notices)}건")
+        for n in notices:
+            lines.append(f"• {n['title']}")
+
+    payload = {"content": "🔔 **을지대학교 새 공지 알림**\n\n" + "\n".join(lines)}
+
+    if notification_id:
+        try:
+            resp = session.delete(
+                f"{DISCORD_WEBHOOK_URL}/messages/{notification_id}",
+                timeout=REQUEST_TIMEOUT,
+            )
+            if resp.status_code not in (204, 404):
+                resp.raise_for_status()
+        except requests.RequestException as e:
+            log.error("알림 메시지 삭제 실패: %s", e)
+
+    try:
+        resp = session.post(
+            f"{DISCORD_WEBHOOK_URL}?wait=true",
+            json=payload,
+            timeout=REQUEST_TIMEOUT,
+        )
+        resp.raise_for_status()
+        new_id = resp.json().get("id")
+        log.info("알림 메시지 전송 완료 (id=%s)", new_id)
+        return new_id
+    except requests.RequestException as e:
+        log.error("알림 메시지 전송 실패: %s", e)
+        return notification_id
 
 
 def load_history():
@@ -152,6 +182,8 @@ def main():
 
     history = load_history()
     message_ids = history.get("__message_ids__", {})
+    notification_id = history.get("__notification_id__")
+    updates = {}
 
     with requests.Session() as session:
         session.headers.update(HEADERS)
@@ -170,14 +202,15 @@ def main():
             if not seen_links:
                 log.info("[%s] 최초 실행: 최신 %d건 전송.", category, len(top5))
                 if DISCORD_WEBHOOK_URL:
-                    new_id = send_or_edit(session, category, top5, message_ids.get(category))
+                    new_id = send_or_edit_status(session, category, top5, message_ids.get(category))
                     if new_id:
                         message_ids[category] = new_id
             elif new_notices:
                 for n in new_notices:
                     log.info("[%s] 새 공지 발견 → %s", category, n["title"])
+                updates[category] = new_notices
                 if DISCORD_WEBHOOK_URL:
-                    new_id = send_or_edit(session, category, top5, message_ids.get(category))
+                    new_id = send_or_edit_status(session, category, top5, message_ids.get(category))
                     if new_id:
                         message_ids[category] = new_id
             else:
@@ -188,7 +221,11 @@ def main():
             merged = new_links + [link for link in seen_links if link not in new_links_set]
             history[category] = merged[:MAX_SAVED_LINKS]
 
+        if updates and DISCORD_WEBHOOK_URL:
+            notification_id = send_notification(session, updates, notification_id)
+
     history["__message_ids__"] = message_ids
+    history["__notification_id__"] = notification_id
     save_history(history)
 
 
