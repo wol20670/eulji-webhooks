@@ -50,8 +50,6 @@ def get_notices(session, url):
 
         notices = []
         for row in soup.select("table.board-list tbody tr"):
-            if row.select_one('td img[src*="icon_notice"]'):
-                continue
             title_el = row.select_one("td.subject a")
             if not title_el:
                 continue
