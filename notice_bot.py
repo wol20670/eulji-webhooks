@@ -143,10 +143,10 @@ def main():
             new_notices = [n for n in notices if n["link"] not in seen_set]
 
             if not seen_links:
-                to_send = notices[:MAX_SEND_PER_RUN]
+                to_send = sorted(notices, key=lambda n: n["date"], reverse=True)[:MAX_SEND_PER_RUN]
                 log.info("[%s] 최초 실행: 최신 %d건 전송.", category, len(to_send))
             elif new_notices:
-                to_send = new_notices[:MAX_SEND_PER_RUN]
+                to_send = sorted(new_notices, key=lambda n: n["date"], reverse=True)[:MAX_SEND_PER_RUN]
                 for n in to_send:
                     log.info("[%s] 새 공지 발견 → %s", category, n["title"])
             else:
