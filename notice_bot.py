@@ -61,8 +61,12 @@ def get_notices(session, url):
             )
             if not seq_match:
                 continue
+            title = title_el.get_text(strip=True)
+            # 의정부 단독 공지 제외 (성남 언급 없이 의정부만 있으면 스킵)
+            if "의정부" in title and "성남" not in title:
+                continue
             notices.append({
-                "title": title_el.get_text(strip=True),
+                "title": title,
                 "link": f"https://eulji.ac.kr/renewal/index.html?menuno={menuno}&mode=view&seq={seq_match.group(1)}",
             })
         return notices
