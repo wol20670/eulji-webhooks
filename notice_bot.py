@@ -1,7 +1,6 @@
 import os
 import re
 import json
-import time
 import logging
 import requests
 from bs4 import BeautifulSoup
@@ -28,7 +27,7 @@ CATEGORY_COLORS = {
 }
 
 MAX_SAVED_LINKS = 50
-MAX_SEND_PER_RUN = 5   # 한 번에 최대 전송 건수
+MAX_SEND_PER_RUN = 5
 REQUEST_TIMEOUT = 15
 
 HEADERS = {
@@ -62,12 +61,21 @@ def get_notices(session, url):
             if not seq_match:
                 continue
             title = title_el.get_text(strip=True)
-            # 의정부 단독 공지 제외 (성남 언급 없이 의정부만 있으면 스킵)
             if "의정부" in title and "성남" not in title:
                 continue
+
+            # 날짜: YYYY-MM-DD 패턴을 가진 td 탐색
+            date = ""
+            for td in row.find_all("td"):
+                text = td.get_text(strip=True)
+                if re.match(r"\d{4}-\d{2}-\d{2}", text):
+                    date = text
+                    break
+
             notices.append({
                 "title": title,
                 "link": f"https://eulji.ac.kr/renewal/index.html?menuno={menuno}&mode=view&seq={seq_match.group(1)}",
+                "date": date,
             })
         return notices
     except requests.RequestException as e:
@@ -75,12 +83,17 @@ def get_notices(session, url):
         return []
 
 
-def send_discord_message(session, category, title, link):
+def send_discord_notices(session, category, notices):
+    # 최신순(위) → 오래된순(아래) 으로 정렬해서 표시
+    lines = []
+    for n in notices:
+        date_str = f"`{n['date']}`  " if n["date"] else ""
+        lines.append(f"{date_str}[{n['title']}]({n['link']})")
+
     payload = {
         "embeds": [{
-            "title": f"🔔 을지대학교 [{category}] 새 공지",
-            "description": title,
-            "url": link,
+            "title": f"🔔 을지대학교 [{category}] 새 공지 {len(notices)}건",
+            "description": "\n".join(lines),
             "color": CATEGORY_COLORS[category],
         }]
     }
@@ -132,24 +145,18 @@ def main():
             new_notices = [n for n in notices if n["link"] not in seen_set]
 
             if not seen_links:
-                # 최초 실행: 최신 5건을 알림으로 전송
                 to_send = notices[:MAX_SEND_PER_RUN]
                 log.info("[%s] 최초 실행: 최신 %d건 전송.", category, len(to_send))
-                for notice in reversed(to_send):
-                    log.info("[%s] → %s", category, notice["title"])
-                    if DISCORD_WEBHOOK_URL:
-                        send_discord_message(session, category, notice["title"], notice["link"])
-                        time.sleep(1)
             elif new_notices:
-                # 새 공지는 최대 5건, 오래된 것부터 전송
                 to_send = new_notices[:MAX_SEND_PER_RUN]
-                for notice in reversed(to_send):
-                    log.info("[%s] 새 공지 발견 → %s", category, notice["title"])
-                    if DISCORD_WEBHOOK_URL:
-                        send_discord_message(session, category, notice["title"], notice["link"])
-                        time.sleep(1)
+                for n in to_send:
+                    log.info("[%s] 새 공지 발견 → %s", category, n["title"])
             else:
                 log.info("[%s] 새 공지 없음.", category)
+                to_send = []
+
+            if to_send and DISCORD_WEBHOOK_URL:
+                send_discord_notices(session, category, to_send)
 
             new_links = [n["link"] for n in notices]
             new_links_set = set(new_links)
