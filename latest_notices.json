@@ -23,6 +23,8 @@
         "https://eulji.ac.kr/renewal/index.html?menuno=3160&mode=view&seq=1048"
     ],
     "장학공지": [
+        "https://eulji.ac.kr/renewal/index.html?menuno=4005&mode=view&seq=1080",
+        "https://eulji.ac.kr/renewal/index.html?menuno=4005&mode=view&seq=1079",
         "https://eulji.ac.kr/renewal/index.html?menuno=4005&mode=view&seq=1068",
         "https://eulji.ac.kr/renewal/index.html?menuno=4005&mode=view&seq=1066",
         "https://eulji.ac.kr/renewal/index.html?menuno=4005&mode=view&seq=1065",
@@ -44,5 +46,5 @@
         "일반공지": "1521408095547428876",
         "장학공지": "1521408099058061324"
     },
-    "__notification_id__": null
+    "__notification_id__": "1522458638566821908"
 }
