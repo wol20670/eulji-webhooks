@@ -30,6 +30,9 @@ MAX_SAVED_LINKS = 20
 MAX_SEND_PER_RUN = 5
 REQUEST_TIMEOUT = 15
 
+MSG_IDS_KEY = "__message_ids__"
+NOTIFICATION_ID_KEY = "__notification_id__"
+
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -76,6 +79,23 @@ def get_notices(session, url):
         return []
 
 
+def _post_message(session, payload, label):
+    """웹훅으로 새 메시지를 전송하고 생성된 id를 반환한다. 실패 시 None."""
+    try:
+        resp = session.post(
+            f"{DISCORD_WEBHOOK_URL}?wait=true",
+            json=payload,
+            timeout=REQUEST_TIMEOUT,
+        )
+        resp.raise_for_status()
+        new_id = resp.json().get("id")
+        log.info("%s 전송 완료 (id=%s)", label, new_id)
+        return new_id
+    except requests.RequestException as e:
+        log.error("%s 전송 실패: %s", label, e)
+        return None
+
+
 def send_or_edit_status(session, category, notices, message_id=None):
     lines = []
     for n in notices:
@@ -107,19 +127,7 @@ def send_or_edit_status(session, category, notices, message_id=None):
             log.error("디스코드 메시지 수정 실패 (%s): %s", category, e)
             return message_id
 
-    try:
-        resp = session.post(
-            f"{DISCORD_WEBHOOK_URL}?wait=true",
-            json=payload,
-            timeout=REQUEST_TIMEOUT,
-        )
-        resp.raise_for_status()
-        new_id = resp.json().get("id")
-        log.info("[%s] 상태 메시지 전송 완료 (id=%s)", category, new_id)
-        return new_id
-    except requests.RequestException as e:
-        log.error("디스코드 전송 실패 (%s): %s", category, e)
-        return None
+    return _post_message(session, payload, f"[{category}] 상태 메시지")
 
 
 def send_notification(session, updates, notification_id=None):
@@ -142,19 +150,8 @@ def send_notification(session, updates, notification_id=None):
         except requests.RequestException as e:
             log.error("알림 메시지 삭제 실패: %s", e)
 
-    try:
-        resp = session.post(
-            f"{DISCORD_WEBHOOK_URL}?wait=true",
-            json=payload,
-            timeout=REQUEST_TIMEOUT,
-        )
-        resp.raise_for_status()
-        new_id = resp.json().get("id")
-        log.info("알림 메시지 전송 완료 (id=%s)", new_id)
-        return new_id
-    except requests.RequestException as e:
-        log.error("알림 메시지 전송 실패: %s", e)
-        return notification_id
+    new_id = _post_message(session, payload, "알림 메시지")
+    return new_id if new_id else notification_id
 
 
 def load_history():
@@ -176,56 +173,67 @@ def save_history(history):
         log.error("히스토리 파일 저장 실패: %s", e)
 
 
+def process_category(session, category, url, history, message_ids):
+    """한 카테고리를 스크래핑하고 상태 메시지를 갱신한 뒤, 새 공지 목록을 반환한다.
+    새 공지가 없으면 None을 반환한다."""
+    notices = get_notices(session, url)
+    if not notices:
+        log.warning("[%s] 공지를 가져오지 못했습니다.", category)
+        return None
+
+    seen_links = history.get(category, [])
+    seen_set = set(seen_links)
+    new_notices = [n for n in notices if n["link"] not in seen_set]
+    top5 = sorted(notices, key=lambda n: n["date"], reverse=True)[:MAX_SEND_PER_RUN]
+
+    result = None
+    if not seen_links:
+        log.info("[%s] 최초 실행: 최신 %d건 전송.", category, len(top5))
+        if DISCORD_WEBHOOK_URL:
+            new_id = send_or_edit_status(session, category, top5, message_ids.get(category))
+            if new_id:
+                message_ids[category] = new_id
+    elif new_notices:
+        for n in new_notices:
+            log.info("[%s] 새 공지 발견 → %s", category, n["title"])
+        result = new_notices
+        if DISCORD_WEBHOOK_URL:
+            new_id = send_or_edit_status(session, category, top5, message_ids.get(category))
+            if new_id:
+                message_ids[category] = new_id
+    else:
+        log.info("[%s] 새 공지 없음.", category)
+
+    new_links = [n["link"] for n in notices]
+    new_links_set = set(new_links)
+    merged = new_links + [link for link in seen_links if link not in new_links_set]
+    history[category] = merged[:MAX_SAVED_LINKS]
+
+    return result
+
+
 def main():
     if not DISCORD_WEBHOOK_URL:
         log.warning("DISCORD_WEBHOOK 환경 변수가 설정되지 않았습니다.")
 
     history = load_history()
-    message_ids = history.get("__message_ids__", {})
-    notification_id = history.get("__notification_id__")
+    message_ids = history.get(MSG_IDS_KEY, {})
+    notification_id = history.get(NOTIFICATION_ID_KEY)
     updates = {}
 
     with requests.Session() as session:
         session.headers.update(HEADERS)
 
         for category, url in TARGET_URLS.items():
-            notices = get_notices(session, url)
-            if not notices:
-                log.warning("[%s] 공지를 가져오지 못했습니다.", category)
-                continue
-
-            seen_links = history.get(category, [])
-            seen_set = set(seen_links)
-            new_notices = [n for n in notices if n["link"] not in seen_set]
-            top5 = sorted(notices, key=lambda n: n["date"], reverse=True)[:MAX_SEND_PER_RUN]
-
-            if not seen_links:
-                log.info("[%s] 최초 실행: 최신 %d건 전송.", category, len(top5))
-                if DISCORD_WEBHOOK_URL:
-                    new_id = send_or_edit_status(session, category, top5, message_ids.get(category))
-                    if new_id:
-                        message_ids[category] = new_id
-            elif new_notices:
-                for n in new_notices:
-                    log.info("[%s] 새 공지 발견 → %s", category, n["title"])
+            new_notices = process_category(session, category, url, history, message_ids)
+            if new_notices:
                 updates[category] = new_notices
-                if DISCORD_WEBHOOK_URL:
-                    new_id = send_or_edit_status(session, category, top5, message_ids.get(category))
-                    if new_id:
-                        message_ids[category] = new_id
-            else:
-                log.info("[%s] 새 공지 없음.", category)
-
-            new_links = [n["link"] for n in notices]
-            new_links_set = set(new_links)
-            merged = new_links + [link for link in seen_links if link not in new_links_set]
-            history[category] = merged[:MAX_SAVED_LINKS]
 
         if updates and DISCORD_WEBHOOK_URL:
             notification_id = send_notification(session, updates, notification_id)
 
-    history["__message_ids__"] = message_ids
-    history["__notification_id__"] = notification_id
+    history[MSG_IDS_KEY] = message_ids
+    history[NOTIFICATION_ID_KEY] = notification_id
     save_history(history)
 
 
