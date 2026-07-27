@@ -26,7 +26,7 @@ CATEGORY_COLORS = {
     "장학공지": 5763207,
 }
 
-MAX_SAVED_LINKS = 20
+MAX_SAVED_LINKS = 100  # 목록 페이지의 전체 건수보다 충분히 커야 한다
 MAX_SEND_PER_RUN = 5
 REQUEST_TIMEOUT = 15
 
@@ -207,7 +207,9 @@ def process_category(session, category, url, history, message_ids):
     new_links = [n["link"] for n in notices]
     new_links_set = set(new_links)
     merged = new_links + [link for link in seen_links if link not in new_links_set]
-    history[category] = merged[:MAX_SAVED_LINKS]
+    # 지금 페이지에 떠 있는 링크는 절대 잘려나가면 안 된다.
+    # 잘리면 다음 실행에서 새 공지로 오인해 같은 알림이 반복된다.
+    history[category] = merged[:max(MAX_SAVED_LINKS, len(new_links))]
 
     return result
 
