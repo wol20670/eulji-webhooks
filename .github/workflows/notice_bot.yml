@@ -8,18 +8,24 @@ on:
 permissions:
   contents: write  # latest_notices.json 커밋을 위해 필요
 
+# 수동 실행과 스케줄 실행이 겹치면 알림이 중복되고 push가 충돌한다.
+concurrency:
+  group: notice-bot
+  cancel-in-progress: false
+
 jobs:
   check-notices:
     runs-on: ubuntu-latest
 
     steps:
       - name: 저장소 체크아웃
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Python 설정
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
+          cache: pip
 
       - name: 의존성 설치
         run: pip install -r requirements.txt
@@ -29,7 +35,9 @@ jobs:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: python notice_bot.py
 
+      # 일부 카테고리만 실패해도 성공한 쪽의 히스토리는 커밋해야 중복 알림이 안 생긴다.
       - name: 히스토리 파일 커밋
+        if: ${{ !cancelled() }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
